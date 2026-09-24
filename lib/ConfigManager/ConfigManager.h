@@ -4,27 +4,22 @@
 #include <Arduino.h>
 
 struct Config {
-  float         lowPress;         // бар, порог включения
-  float         highPress;        // бар, порог выключения
-  unsigned long turnOnDelay;      // мс, задержка перед включением
-  unsigned long maxRunTime;       // мс, макс. время работы
-  unsigned long cooldownTime;     // мс, ожидание после аварии
-  float         emergencyLowPress;// бар, аварийный нижний порог
+  float         startPress;   // бар, порог запуска (3.0)
+  unsigned long onTime;       // мс, время подачи озона (15000)
+  unsigned long offTime;      // мс, пауза между подачами (45000)
 };
 
 class ConfigManager {
   public:
     explicit ConfigManager(int eepromAddr = 0);
 
-    void      begin();                                  // читает EEPROM
-    void      load();                                   // загрузка
-    void      save();                                   // запись
-    void      print(Stream &out);                       // вывод настроек
+    void      begin();
+    void      load();
+    void      save();
+    void      reset();          // сброс к значениям по умолчанию
+    void      print(Stream &out);
 
-    // Обрабатывает одну строку команды из Serial (если она есть).
-    // Возвращает true, если команда была распознана.
-    bool      handleCommand(Stream &serial);
-
+    bool      handleLine(const String &cmd, Stream &serial);
     Config&   get() { return _cfg; }
 
   private:
@@ -32,6 +27,7 @@ class ConfigManager {
     Config   _cfg;
 
     void     _setDefaults();
+    bool     _isValid() const;
 };
 
 #endif

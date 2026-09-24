@@ -1,50 +1,70 @@
 #include "ConfigManager.h"
 #include <EEPROM.h>
 
-ConfigManager::ConfigManager(int eepromAddr) : _addr(eepromAddr) {}
+// Магический маркер — ставим в самом начале EEPROM.
+// Если его там нет, значит EEPROM «чистая» или от другой прошивки.
+static const uint16_t MAGIC = 0xA5C3;
+static const int      MAGIC_ADDR = 0;
+static const int      DATA_ADDR  = 2;   // после маркера
+
+ConfigManager::ConfigManager(int eepromAddr)
+  : _addr(eepromAddr ? eepromAddr : DATA_ADDR) {}
 
 void ConfigManager::_setDefaults() {
-  _cfg.lowPress          = 2.0f;
-  _cfg.highPress         = 4.0f;
-  _cfg.turnOnDelay       = 100;
-  _cfg.maxRunTime        = 5000;
-  _cfg.cooldownTime      = 3000;
-  _cfg.emergencyLowPress = 0.8f;
+  _cfg.startPress = 3.0f;
+  _cfg.onTime     = 15000UL;   // 15 с
+  _cfg.offTime    = 45000UL;   // 45 с
 }
 
-void ConfigManager::begin() {
-  load();
+bool ConfigManager::_isValid() const {
+  if (isnan(_cfg.startPress) || isinf(_cfg.startPress)) return false;
+  if (_cfg.startPress <= 0.0f || _cfg.startPress > 10.0f) return false;
+  if (_cfg.onTime  == 0 || _cfg.onTime  > 3600000UL)  return false; // ≤ 1 ч
+  if (_cfg.offTime == 0 || _cfg.offTime > 3600000UL)  return false;
+  return true;
 }
+
+void ConfigManager::begin() { load(); }
 
 void ConfigManager::load() {
+  uint16_t magic = 0;
+  EEPROM.get(MAGIC_ADDR, magic);
+
+  if (magic != MAGIC) {
+    // EEPROM чистая или от другой прошивки
+    _setDefaults();
+    save();
+    return;
+  }
+
   EEPROM.get(_addr, _cfg);
-  // Если EEPROM «чистая» — задаём значения по умолчанию
-  if (_cfg.lowPress == 0.0f && _cfg.highPress == 0.0f) {
+
+  if (!_isValid()) {
+    // Данные повреждены или несовместимы — сбрасываем
     _setDefaults();
     save();
   }
 }
 
 void ConfigManager::save() {
+  EEPROM.put(MAGIC_ADDR, MAGIC);
   EEPROM.put(_addr, _cfg);
 }
 
-void ConfigManager::print(Stream &out) {
-  out.println(F("=== ТЕКУЩИЕ НАСТРОЙКИ ==="));
-  out.print(F("L (нижний порог, бар): "));    out.println(_cfg.lowPress, 2);
-  out.print(F("H (верхний порог, бар): "));   out.println(_cfg.highPress, 2);
-  out.print(F("D (задержка, мс): "));         out.println(_cfg.turnOnDelay);
-  out.print(F("M (макс. время, мс): "));      out.println(_cfg.maxRunTime);
-  out.print(F("C (cooldown, мс): "));         out.println(_cfg.cooldownTime);
-  out.print(F("E (аварийный порог, бар): ")); out.println(_cfg.emergencyLowPress, 2);
-  out.println(F("========================="));
+void ConfigManager::reset() {
+  _setDefaults();
+  save();
 }
 
-bool ConfigManager::handleCommand(Stream &serial) {
-  if (!serial.available()) return false;
+void ConfigManager::print(Stream &out) {
+  out.println(F("=== НАСТРОЙКИ ОЗОНИРОВАНИЯ ==="));
+  out.print(F("P startPress, бар: ")); out.println(_cfg.startPress, 2);
+  out.print(F("O onTime, мс: "));      out.println(_cfg.onTime);
+  out.print(F("F offTime, мс: "));     out.println(_cfg.offTime);
+  out.println(F("=============================="));
+}
 
-  String cmd = serial.readStringUntil('\n');
-  cmd.trim();
+bool ConfigManager::handleLine(const String &cmd, Stream &serial) {
   if (cmd.length() == 0) return false;
 
   if (cmd.equalsIgnoreCase("show")) { print(serial); return true; }
@@ -53,10 +73,16 @@ bool ConfigManager::handleCommand(Stream &serial) {
     serial.println(F("Настройки сохранены в EEPROM."));
     return true;
   }
+  if (cmd.equalsIgnoreCase("R")) {
+    reset();
+    serial.println(F("Настройки сброшены к значениям по умолчанию."));
+    print(serial);
+    return true;
+  }
 
   int eq = cmd.indexOf('=');
   if (eq <= 0) {
-    serial.println(F("Неверный формат. Пример: L=2.5, H=4.0, D=200, M=5000, C=3000, E=0.8"));
+    serial.println(F("Формат: P=3.0 O=15000 F=45000, show, save, R"));
     return false;
   }
 
@@ -65,15 +91,18 @@ bool ConfigManager::handleCommand(Stream &serial) {
   key.trim();
   key.toUpperCase();
 
-  if      (key == "L") { _cfg.lowPress          = val; }
-  else if (key == "H") { _cfg.highPress         = val; }
-  else if (key == "D") { _cfg.turnOnDelay       = (unsigned long)val; }
-  else if (key == "M") { _cfg.maxRunTime        = (unsigned long)val; }
-  else if (key == "C") { _cfg.cooldownTime      = (unsigned long)val; }
-  else if (key == "E") { _cfg.emergencyLowPress = val; }
+  if      (key == "P") { _cfg.startPress = val; }
+  else if (key == "O") { _cfg.onTime     = (unsigned long)val; }
+  else if (key == "F") { _cfg.offTime    = (unsigned long)val; }
   else {
     serial.print(F("Неизвестный параметр: "));
     serial.println(key);
+    return false;
+  }
+
+  if (!_isValid()) {
+    serial.println(F("Значения вне допустимого диапазона, отменено."));
+    load();
     return false;
   }
 

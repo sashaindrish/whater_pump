@@ -1,52 +1,56 @@
 #include <Arduino.h>
 #include "PressureSensor.h"
 #include "ConfigManager.h"
-#include "PumpController.h"
+#include "OzonationController.h"
 
-// ---- Аппаратные пины ----
 const uint8_t SENSOR_PIN   = A0;
 const uint8_t PUMP_PIN     = 2;
-
-// ---- Номинал резистора ----
 const float   RESISTOR_OHM = 220.0f;
 
-// ---- Объекты ----
-PressureSensor  sensor(SENSOR_PIN, RESISTOR_OHM);
-ConfigManager   configManager;
-PumpController  pump(PUMP_PIN);
+PressureSensor      sensor(SENSOR_PIN, RESISTOR_OHM);
+ConfigManager       cfgMgr;
+OzonationController ozone(PUMP_PIN);
 
-// ---- Период вывода в плоттер ----
 const unsigned long PRINT_PERIOD_MS = 50;
 unsigned long lastPrint = 0;
 
 void setup() {
   Serial.begin(9600);
-  delay(1000);                 // стабилизация питания датчика
+  delay(1000);
 
   sensor.begin();
-  configManager.begin();
-  pump.begin();
+  cfgMgr.begin();
+  ozone.begin();
 
-  Serial.println(F("Система хлорирования запущена."));
-  configManager.print(Serial);
+  sensor.setKalmanQ(0.005f);
+  sensor.setKalmanR(0.15f);
+
+  Serial.println(F("Система озонирования запущена."));
+  cfgMgr.print(Serial);
 }
 
 void loop() {
-  // 1. Настройки по UART
-  configManager.handleCommand(Serial);
+  // 1) UART-команды
+  if (Serial.available()) {
+    String cmd = Serial.readStringUntil('\n');
+    cmd.trim();
+    cfgMgr.handleLine(cmd, Serial);
+  }
 
-  // 2. Давление (отфильтрованное)
+  // 2) Давление
   float pressure = sensor.readPressure();
 
-  // 3. Управление насосом
-  pump.update(pressure, configManager.get());
+  // 3) Логика
+  ozone.update(pressure, cfgMgr.get());
 
-  // 4. Вывод в плоттер Arduino IDE 2.x: "<давление> <насос 0/1>"
+  // 4) Плоттер: давление, вкл/выкл, состояние (0..2)
   unsigned long now = millis();
   if (now - lastPrint >= PRINT_PERIOD_MS) {
     lastPrint = now;
     Serial.print(pressure, 2);
     Serial.print(' ');
-    Serial.println(pump.isOn() ? 1 : 0);
+    Serial.print(ozone.isOn() ? 1 : 0);
+    Serial.print(' ');
+    Serial.println((int)ozone.getState());
   }
 }
